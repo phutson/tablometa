@@ -3,17 +3,40 @@ package tablometadata
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
 
 const (
-	TABLODATEPATTERN = `"[0-9]+-(0?[1-9]|[1][0-2])-[0-9]+T(0?[0-9]|1[0-9]|2[0-3]):[0-9]+Z"`
-	RFC3339PATTERN   = `"[0-9]+-(0?[1-9]|[1][0-2])-[0-9]+T(0?[0-9]|1[0-9]|2[0-3]):[0-9]+:[0-9]+\.[0-9]+Z"`
+	TABLODATEPATTERN         = `"[0-9]+-(0?[1-9]|[1][0-2])-[0-9]+T(0?[0-9]|1[0-9]|2[0-3]):[0-9]+Z"`
+	RFC3339PATTERN           = `"[0-9]+-(0?[1-9]|[1][0-2])-[0-9]+T(0?[0-9]|1[0-9]|2[0-3]):[0-9]+:[0-9]+\.[0-9]+Z"`
+	CLIENTRECAIRINGMOVIEFMT  = `{"%s":"%s","%s":%d,"%s":%s,"%s":%.1f,"%s":%s,"%s":%s,"%s":%s} `
+	CLIENTRECMOVIE           = `{"%s":"%s","%s":"%s","%s":%d,"%s":"%s","%s":%d,"%s":%s,"%s":%s,"%s":%.3f,"%s":%s,"%s":"%s","%s":%d}`
+	RECMOVIEFMT              = `{"%s":%s,"%s":%s}`
+	RELATIONSHIPSMOVIESFMT   = `{"%s":%d,"%s":%d}`
+	RELATIONSHIPSEPISODESFMT = `{"%s":%d,"%s":%d,"%s":%d}`
+	RELATIONSHIPSGENRESFMT   = `{"%s":%s}`
+	RECORDINGMOVIEFMT        = `{"%s":%s,"%s":%s}`
+	VIDEOINFOFMT             = `{"%s":"%s","%s":%d,"%s":%d,"%s":%d,"%s":%.1f,"%s":%.1f,"%s":%.1f}`
+	USERINFOFMT              = `{"%s":"%s","%s":%t,"%s":%t,"%s":%.1f}`
 )
+
+func getJSONFieldNameByName(structureOfInterest interface{}, fieldName string) (string, error) {
+	episodeField, wasFound := reflect.TypeOf(structureOfInterest).FieldByName(fieldName)
+	if wasFound {
+		jsonFieldName := episodeField.Tag.Get("json")
+		if len(jsonFieldName) < 1 {
+			return "", errors.New("json tag not found")
+		} else {
+			return jsonFieldName, nil
+		}
+	} else {
+		return "", errors.New("field not found")
+	}
+}
 
 type TabloType interface {
 	GetTabloType() string
@@ -21,6 +44,10 @@ type TabloType interface {
 
 type TabloDate struct {
 	StoredTime time.Time
+}
+
+func (tt TabloDate) Format(layout string) string {
+	return tt.StoredTime.Format(layout)
 }
 
 func (tt *TabloDate) UnmarshalJSON(data []byte) error {
@@ -39,11 +66,7 @@ func (tt *TabloDate) UnmarshalJSON(data []byte) error {
 }
 
 func (tt TabloDate) MarshalJSON() ([]byte, error) {
-	jsonData, err := json.Marshal(tt.StoredTime)
-	if err != nil {
-		return nil, err
-	}
-	jsonString := strings.Replace(string(jsonData[:]), `:00.00Z"`, `Z"`, 1)
+	jsonString := fmt.Sprintf(`"%s"`, tt.StoredTime.Format("2006-01-02T15:04Z"))
 	return []byte(jsonString), nil
 }
 
@@ -57,51 +80,48 @@ type Relationships struct {
 
 func (tr Relationships) MarshalJSON() ([]byte, error) {
 	var jsonData []byte
-	jsonData = append(jsonData, []byte("{ ")...)
-	needsComma := false
-
-	if tr.RecMovie >= 0 {
-		jsonData = append(jsonData, []byte(`"recMovie": `)...)
-		jsonData = append(jsonData, []byte(strconv.Itoa(tr.RecMovie))...)
-		needsComma = true
+	recChannelFieldName, err := getJSONFieldNameByName(tr, "RecChannel")
+	if err != nil {
+		return nil, err
 	}
 
-	if tr.RecSeason >= 0 {
-		if needsComma {
-			jsonData = append(jsonData, []byte(`, `)...)
+	if tr.RecMovie > 0 {
+		recMovieFieldName, err := getJSONFieldNameByName(tr, "RecMovie")
+		if err != nil {
+			return nil, err
 		}
-		jsonData = append(jsonData, []byte(`"recSeason": `)...)
-		jsonData = append(jsonData, []byte(strconv.Itoa(tr.RecSeason))...)
-		needsComma = true
+
+		jsonString := fmt.Sprintf(RELATIONSHIPSMOVIESFMT, recMovieFieldName, tr.RecMovie, recChannelFieldName, tr.RecChannel)
+		jsonData = append(jsonData, []byte(jsonString)...)
 	}
-	if tr.RecSeries >= 0 {
-		if needsComma {
-			jsonData = append(jsonData, []byte(`, `)...)
+
+	if tr.RecSeason > 0 {
+
+		recSeasonFieldName, err := getJSONFieldNameByName(tr, "RecSeason")
+		if err != nil {
+			return nil, err
 		}
-		jsonData = append(jsonData, []byte(`"recSeries": `)...)
-		jsonData = append(jsonData, []byte(strconv.Itoa(tr.RecSeries))...)
-		needsComma = true
-	}
-	if tr.RecChannel >= 0 {
-		if needsComma {
-			jsonData = append(jsonData, []byte(`, `)...)
+		recSeriesFieldName, err := getJSONFieldNameByName(tr, "RecSeries")
+		if err != nil {
+			return nil, err
 		}
-		jsonData = append(jsonData, []byte(`"recChannel": `)...)
-		jsonData = append(jsonData, []byte(strconv.Itoa(tr.RecChannel))...)
-		needsComma = true
+
+		jsonString := fmt.Sprintf(RELATIONSHIPSEPISODESFMT, recSeasonFieldName, tr.RecSeason, recSeriesFieldName, tr.RecSeries, recChannelFieldName, tr.RecChannel)
+		jsonData = append(jsonData, []byte(jsonString)...)
 	}
 	if tr.Genres != nil && len(tr.Genres) > 0 {
 		genreJSONData, err := json.Marshal(tr.Genres)
 		if err != nil {
 			return nil, err
 		}
-		jsonData = append(jsonData, []byte(`"genres": `)...)
-		jsonData = append(jsonData, genreJSONData...)
-		needsComma = true
-
+		genresFieldName, err := getJSONFieldNameByName(tr, "Genres")
+		if err != nil {
+			return nil, err
+		}
+		jsonString := fmt.Sprintf(RELATIONSHIPSGENRESFMT, genresFieldName, string(genreJSONData[:]))
+		jsonData = append(jsonData, []byte(jsonString)...)
 	}
 
-	jsonData = append(jsonData, []byte(" }")...)
 	return jsonData, nil
 }
 
@@ -115,11 +135,79 @@ type VideoInfo struct {
 	ScheduleOffsetEnd   float32 `json:"scheduleOffsetEnd"`
 }
 
+func (vr VideoInfo) MarshalJSON() ([]byte, error) {
+
+	var jsonData []byte
+	stateFieldName, err := getJSONFieldNameByName(vr, "State")
+	if err != nil {
+		return nil, err
+	}
+
+	sizeFieldName, err := getJSONFieldNameByName(vr, "Size")
+	if err != nil {
+		return nil, err
+	}
+	widthFieldName, err := getJSONFieldNameByName(vr, "Width")
+	if err != nil {
+		return nil, err
+	}
+	heightFieldName, err := getJSONFieldNameByName(vr, "Height")
+	if err != nil {
+		return nil, err
+	}
+	durationFieldName, err := getJSONFieldNameByName(vr, "Duration")
+	if err != nil {
+		return nil, err
+	}
+
+	scheduleOffsetStartFieldName, err := getJSONFieldNameByName(vr, "ScheduleOffsetStart")
+	if err != nil {
+		return nil, err
+	}
+
+	scheduleOffsetEndFieldName, err := getJSONFieldNameByName(vr, "ScheduleOffsetEnd")
+	if err != nil {
+		return nil, err
+	}
+
+	jsonString := fmt.Sprintf(VIDEOINFOFMT, stateFieldName, vr.State, sizeFieldName, vr.Size, widthFieldName, vr.Width, heightFieldName, vr.Height,
+		durationFieldName, vr.Duration, scheduleOffsetStartFieldName, vr.ScheduleOffsetStart, scheduleOffsetEndFieldName, vr.ScheduleOffsetEnd)
+	jsonData = append(jsonData, []byte(jsonString)...)
+
+	return jsonData, nil
+}
+
 type UserInfo struct {
 	UserType  string  `json:"type"`
 	Watched   bool    `json:"watched"`
 	Protected bool    `json:"protected"`
 	Position  float32 `json:"position"`
+}
+
+func (ur UserInfo) MarshalJSON() ([]byte, error) {
+
+	var jsonData []byte
+	usertypeFieldName, err := getJSONFieldNameByName(ur, "UserType")
+	if err != nil {
+		return nil, err
+	}
+
+	watchedFieldName, err := getJSONFieldNameByName(ur, "Watched")
+	if err != nil {
+		return nil, err
+	}
+	protectedFieldName, err := getJSONFieldNameByName(ur, "Protected")
+	if err != nil {
+		return nil, err
+	}
+	positionFieldName, err := getJSONFieldNameByName(ur, "Position")
+	if err != nil {
+		return nil, err
+	}
+	jsonString := fmt.Sprintf(USERINFOFMT, usertypeFieldName, ur.UserType, watchedFieldName, ur.Watched, protectedFieldName, ur.Protected, positionFieldName, ur.Position)
+	jsonData = append(jsonData, []byte(jsonString)...)
+
+	return jsonData, nil
 }
 
 type ImageData struct {
@@ -144,7 +232,7 @@ type ClientJSON struct {
 	QualityRating    float32       `json:"qualityRating"`
 	Relationships    Relationships `json:"relationships"`
 	Type             string        `json:"type"`
-	ObjectId         int           `json:"objectID"`
+	ObjectID         int           `json:"objectID"`
 	AirDate          TabloDate     `json:"airDate"`
 	ScheduleDuration float32       `json:"scheduleDuration"`
 	Video            VideoInfo     `json:"video"`
@@ -158,55 +246,119 @@ type ClientJSON struct {
 }
 
 func (tr ClientJSON) MarshalJSON() ([]byte, error) {
-	var jsonData []byte
-	jsonData = append(jsonData, []byte("{ ")...)
 
-	jsonData = append(jsonData, []byte(`"type": "`)...)
-	jsonData = append(jsonData, []byte(tr.Type)...)
-	jsonData = append(jsonData, []byte(`", `)...)
+	var jsonData []byte
+	typeFieldName, err := getJSONFieldNameByName(tr, "Type")
+	if err != nil {
+		return nil, err
+	}
+
+	relationshipsFieldName, err := getJSONFieldNameByName(tr, "Relationships")
+	if err != nil {
+		return nil, err
+	}
+
+	relationshipJSONData, err := tr.Relationships.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+
+	objectIDFieldName, err := getJSONFieldNameByName(tr, "ObjectID")
+	if err != nil {
+		return nil, err
+	}
 
 	if tr.Type == "recMovieAiring" {
-		jsonData = append(jsonData, []byte(`"objectID": `)...)
-		jsonData = append(jsonData, []byte(strconv.Itoa(tr.ObjectId))...)
-		jsonData = append(jsonData, []byte(`, `)...)
+		//type objecid airdate
 
-		jsonData = append(jsonData, []byte(`"airDate": "`)...)
+		airDateFieldName, err := getJSONFieldNameByName(tr, "AirDate")
+		if err != nil {
+			return nil, err
+		}
+
 		airDateData, err := tr.AirDate.MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
-		jsonData = append(jsonData, airDateData...)
-		jsonData = append(jsonData, []byte(`", `)...)
 
-		jsonData = append(jsonData, []byte(`"scheduleDuration": `)...)
-		jsonData = append(jsonData, []byte(strconv.FormatFloat(float64(tr.ScheduleDuration), 'f', -1, 32))...)
-		jsonData = append(jsonData, []byte(`, `)...)
-
-		jsonData = append(jsonData, []byte(`"relationships": `)...)
-		relationshipJSONData, err := tr.Relationships.MarshalJSON()
+		scheduleDurationFieldName, err := getJSONFieldNameByName(tr, "ScheduleDuration")
 		if err != nil {
 			return nil, err
 		}
-		jsonData = append(jsonData, relationshipJSONData...)
-		jsonData = append(jsonData, []byte(`, `)...)
 
-		jsonData = append(jsonData, []byte(`"video": `)...)
+		videoFieldName, err := getJSONFieldNameByName(tr, "Video")
+		if err != nil {
+			return nil, err
+		}
+
 		videoJSONData, err := json.Marshal(tr.Video)
 		if err != nil {
 			return nil, err
 		}
-		jsonData = append(jsonData, videoJSONData...)
-		jsonData = append(jsonData, []byte(`, `)...)
 
-		jsonData = append(jsonData, []byte(`"user": `)...)
+		userFieldName, err := getJSONFieldNameByName(tr, "User")
+		if err != nil {
+			return nil, err
+		}
+
 		userJSONData, err := json.Marshal(tr.User)
 		if err != nil {
 			return nil, err
 		}
-		jsonData = append(jsonData, userJSONData...)
+
+		jsonString := fmt.Sprintf(CLIENTRECAIRINGMOVIEFMT, typeFieldName, tr.Type, objectIDFieldName, tr.ObjectID, airDateFieldName, string(airDateData[:]), scheduleDurationFieldName,
+			tr.ScheduleDuration, relationshipsFieldName, string(relationshipJSONData[:]), videoFieldName, string(videoJSONData[:]), userFieldName, userJSONData)
+		jsonData = append(jsonData, []byte(jsonString)...)
+	} else if tr.Type == "recMovie" {
+		titleFieldName, err := getJSONFieldNameByName(tr, "Title")
+		if err != nil {
+			return nil, err
+		}
+		plotFieldName, err := getJSONFieldNameByName(tr, "Plot")
+		if err != nil {
+			return nil, err
+		}
+		runtimeFieldName, err := getJSONFieldNameByName(tr, "Runtime")
+		if err != nil {
+			return nil, err
+		}
+		mpaaRatingFieldName, err := getJSONFieldNameByName(tr, "MPAARating")
+		if err != nil {
+			return nil, err
+		}
+		releaseYearFieldName, err := getJSONFieldNameByName(tr, "ReleaseYear")
+		if err != nil {
+			return nil, err
+		}
+		castFieldName, err := getJSONFieldNameByName(tr, "Cast")
+		if err != nil {
+			return nil, err
+		}
+
+		castJSONData, err := json.Marshal(tr.Cast)
+		if err != nil {
+			return nil, err
+		}
+
+		directorsFieldName, err := getJSONFieldNameByName(tr, "Directors")
+		if err != nil {
+			return nil, err
+		}
+		directorsJSONData, err := json.Marshal(tr.Directors)
+		if err != nil {
+			return nil, err
+		}
+		qualityRationFieldName, err := getJSONFieldNameByName(tr, "QualityRating")
+		if err != nil {
+			return nil, err
+		}
+
+		jsonString := fmt.Sprintf(CLIENTRECMOVIE, titleFieldName, tr.Title, plotFieldName, tr.Plot, runtimeFieldName, tr.Runtime,
+			mpaaRatingFieldName, tr.MPAARating, releaseYearFieldName, tr.ReleaseYear, castFieldName, string(castJSONData[:]), directorsFieldName, directorsJSONData,
+			qualityRationFieldName, tr.QualityRating, relationshipsFieldName, relationshipJSONData, typeFieldName, tr.Type, objectIDFieldName, tr.ObjectID)
+		jsonData = append(jsonData, []byte(jsonString)...)
 
 	}
-	jsonData = append(jsonData, []byte(" }")...)
 	return jsonData, nil
 }
 
@@ -262,87 +414,33 @@ type Recording struct {
 	RecordedMovie   RecMovie    `json:"recMovie"`
 }
 
-func buildJSONObject(objectToMarshal interface{}, objectKey string, needsComma bool, totalJSONData []byte) ([]byte, error) {
-	objectJSONData, err := json.Marshal(objectToMarshal)
-	if err != nil {
-		return nil, err
-	}
-	if needsComma {
-		totalJSONData = append(totalJSONData, ',')
-	}
-	totalJSONData = append(totalJSONData, []byte(` "`)...)
-
-	totalJSONData = append(totalJSONData, []byte(objectKey)...)
-	totalJSONData = append(totalJSONData, []byte(`": `)...)
-	totalJSONData = append(totalJSONData, objectJSONData...)
-
-	return totalJSONData, nil
-}
-
 func (tr Recording) MarshalJSON() ([]byte, error) {
 	var jsonData []byte
-	jsonData = append(jsonData, []byte("{ ")...)
-	var needsComma = false
-	var err error
 
-	if len(tr.RecordedEpisode.GetTabloType()) > 0 {
-		episodeField, wasFound := reflect.TypeOf(tr).FieldByName("RecordedEpisode")
-		if wasFound {
-			objectKey := episodeField.Tag.Get("json")
-			jsonData, err = buildJSONObject(tr.RecordedEpisode, objectKey, needsComma, jsonData)
-			if err != nil {
-				return nil, err
-			}
-			needsComma = true
-		}
-	}
-
-	if len(tr.RecordedSeries.GetTabloType()) > 0 {
-		episodeField, wasFound := reflect.TypeOf(tr).FieldByName("RecordedSeries")
-		if wasFound {
-			objectKey := episodeField.Tag.Get("json")
-			jsonData, err = buildJSONObject(tr.RecordedSeries, objectKey, needsComma, jsonData)
-			if err != nil {
-				return nil, err
-			}
-			needsComma = true
-		}
-	}
-
-	if len(tr.RecordedSeason.GetTabloType()) > 0 {
-		episodeField, wasFound := reflect.TypeOf(tr).FieldByName("RecordedSeason")
-		if wasFound {
-			objectKey := episodeField.Tag.Get("json")
-			jsonData, err = buildJSONObject(tr.RecordedSeason, objectKey, needsComma, jsonData)
-			if err != nil {
-				return nil, err
-			}
-			needsComma = true
-		}
-	}
 	if len(tr.Airing.GetTabloType()) > 0 {
-		episodeField, wasFound := reflect.TypeOf(tr).FieldByName("Airing")
-		if wasFound {
-			objectKey := episodeField.Tag.Get("json")
-			jsonData, err = buildJSONObject(tr.Airing, objectKey, needsComma, jsonData)
-			if err != nil {
-				return nil, err
-			}
-			needsComma = true
+		airingFieldName, err := getJSONFieldNameByName(tr, "Airing")
+		if err != nil {
+			return nil, err
 		}
-	}
-	if len(tr.RecordedMovie.GetTabloType()) > 0 {
-		episodeField, wasFound := reflect.TypeOf(tr).FieldByName("RecordedMovie")
-		if wasFound {
-			objectKey := episodeField.Tag.Get("json")
-			jsonData, err = buildJSONObject(tr.RecordedMovie, objectKey, needsComma, jsonData)
-			if err != nil {
-				return nil, err
-			}
-			needsComma = true
+
+		airingJSONData, err := json.Marshal(tr.Airing)
+		if err != nil {
+			return nil, err
 		}
+
+		recMovieFieldName, err := getJSONFieldNameByName(tr, "RecordedMovie")
+		if err != nil {
+			return nil, err
+		}
+
+		recMovieJSONData, err := json.Marshal(tr.RecordedMovie)
+		if err != nil {
+			return nil, err
+		}
+		jsonString := fmt.Sprintf(RECORDINGMOVIEFMT, airingFieldName, string(airingJSONData[:]), recMovieFieldName, string(recMovieJSONData[:]))
+
+		jsonData = append(jsonData, []byte(jsonString)...)
 	}
 
-	jsonData = append(jsonData, []byte(" }")...)
 	return jsonData, nil
 }
